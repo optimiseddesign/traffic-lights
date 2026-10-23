@@ -1,0 +1,12 @@
+build
+.yotta.json
+yotta_modules
+yotta_targets
+*.swp
+*~
+Makefile
+*.DS_Store
+*.uf2
+pxtapp
+buildcache.json
+*.pyc

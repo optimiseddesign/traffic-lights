@@ -1,0 +1,10 @@
+{
+    "cmake.configureOnOpen": false,
+    "cmake.configureOnEdit": false,
+    "cmake.automaticReconfigure": false,
+    "cmake.showOptionsMovedNotification": false,
+    "files.associations": {
+        "*.json": "json"
+    },
+    "terminal.integrated.defaultProfile.windows": "PowerShell"
+}
