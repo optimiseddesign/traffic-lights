@@ -19,12 +19,29 @@ struct LightLevels {
     uint8_t green;
 };
 
-//                                        R    A    G
-static const LightLevels LIGHT_OFF   = {  0,   0,   0};
-static const LightLevels LIGHT_RED   = {255,   0,   0};
-static const LightLevels LIGHT_AMBER = {  0, 255,   0};
-static const LightLevels LIGHT_GREEN = {  0,   0, 255};
-static const LightLevels LIGHT_ALL   = {255, 255, 255};
+//                                            R    A    G
+static const LightLevels LIGHT_OFF       = {  0,   0,   0};
+static const LightLevels LIGHT_RED       = {255,   0,   0};
+static const LightLevels LIGHT_AMBER     = {  0, 255,   0};
+static const LightLevels LIGHT_GREEN     = {  0,   0, 255};
+static const LightLevels LIGHT_RED_AMBER = {255, 255,   0};
+static const LightLevels LIGHT_ALL       = {255, 255, 255};
+
+// One step of a light sequence: which lights are on and for how long
+struct SequenceStep {
+    LightLevels lights;
+    int durationMs;
+};
+
+// UK traffic light cycle, timed like a real junction running at minimum green.
+// Red+amber 2s and amber 3s are fixed by law (TSRGD 2016); 7s is the usual minimum green;
+// red lasts while the other road gets its red+amber, green and amber (2 + 7 + 3 = 12s)
+static const SequenceStep UK_TRAFFIC_SEQUENCE[] = {
+    {LIGHT_RED,       20000},
+    {LIGHT_RED_AMBER,  2000},
+    {LIGHT_GREEN,     15000},
+    {LIGHT_AMBER,      3000},
+};
 
 // Define custom 5x5 LED patterns using CODAL string format
 const char * const heart_emoji =
@@ -169,6 +186,14 @@ static void onDelim(MicroBitEvent)
 static void onStart() {
     uBit.audio.soundExpressions.playAsync("hello");
     uBit.display.print(heartImage);
+
+    // Lamp test: flash all lights quickly for 2 seconds
+    for (int elapsedMs = 0; elapsedMs < 2000; elapsedMs += 200) {
+        setLights(LIGHT_ALL);
+        uBit.sleep(100);
+        setLights(LIGHT_OFF);
+        uBit.sleep(100);
+    }
 }
 
 static void configureOnboardSpeaker()
@@ -196,14 +221,12 @@ int main()
     uart = new MicroBitUARTService(*uBit.ble, 32, 32);
     uart->eventOn("#");
 
-    // Light test: step through each light, then all on, then all off
-    // (LED_ commands work too, but only last until the next test step)
-    static const LightLevels TEST_SEQUENCE[] = {LIGHT_RED, LIGHT_AMBER, LIGHT_GREEN, LIGHT_ALL, LIGHT_OFF};
-
+    // Default operation: run the UK traffic light cycle forever
+    // (LED_ commands work too, but only last until the next step)
     while (true) {
-        for (const LightLevels &lights : TEST_SEQUENCE) {
-            setLights(lights);
-            uBit.sleep(1000);
+        for (const SequenceStep &step : UK_TRAFFIC_SEQUENCE) {
+            setLights(step.lights);
+            uBit.sleep(step.durationMs);
         }
     }
 }
