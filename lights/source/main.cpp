@@ -145,25 +145,56 @@ static void runPartyStep()
     waitMs(60 + uBit.random(541));
 }
 
+// Helper function to convert hex character to value
+static int hexCharToValue(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1; // Invalid hex character
+}
+
+// Helper function to parse 6-character hex color code (RRAAGG) and extract light levels
+static bool parseHexColor(ManagedString hexColor, uint8_t &red, uint8_t &amber, uint8_t &green) {
+    if (hexColor.length() != 6) return false;
+
+    // Parse red component (first 2 chars)
+    int r1 = hexCharToValue(hexColor.charAt(0));
+    int r2 = hexCharToValue(hexColor.charAt(1));
+    if (r1 < 0 || r2 < 0) return false;
+
+    // Parse amber component (chars 2-3)
+    int a1 = hexCharToValue(hexColor.charAt(2));
+    int a2 = hexCharToValue(hexColor.charAt(3));
+    if (a1 < 0 || a2 < 0) return false;
+
+    // Parse green component (chars 4-5)
+    int g1 = hexCharToValue(hexColor.charAt(4));
+    int g2 = hexCharToValue(hexColor.charAt(5));
+    if (g1 < 0 || g2 < 0) return false;
+
+    // Convert to light levels (0-255, 0=off)
+    red = r1 * 16 + r2;
+    amber = a1 * 16 + a2;
+    green = g1 * 16 + g2;
+
+    return true;
+}
+
 // Function to handle LED commands starting with LED_
-// Placeholder for future Bluetooth light control - fixed test commands only for now
 static void handleLEDCommand(ManagedString ledCmd) {
-    if (ledCmd == "R") {
-        bleLights = LIGHT_RED;
-    } else if (ledCmd == "A") {
-        bleLights = LIGHT_AMBER;
-    } else if (ledCmd == "G") {
-        bleLights = LIGHT_GREEN;
-    } else if (ledCmd == "OFF") {
-        bleLights = LIGHT_OFF;
+    // Expected format: 6-character hex color code (RRAAGG), 00-FF brightness per light
+    // Example: LED_FF0000# for red, LED_00FF00# for amber, LED_0000FF# for green, LED_000000# for off
+
+    uint8_t red, amber, green;
+    if (parseHexColor(ledCmd, red, amber, green)) {
+        // Hold these lights in Bluetooth mode (the main loop sets them)
+        bleLights = {red, amber, green};
+        setMode(MODE_BLE);
+        uart->send(ManagedString("LED lights set\r\n"));
     } else {
         uBit.audio.soundExpressions.playAsync("sad");
-        uart->send(ManagedString("ERROR: unrecognised LED_ command\r\n"));
-        return;
+        uart->send(ManagedString("ERROR: invalid LED_ hex color format\r\n"));
     }
-
-    setMode(MODE_BLE);
-    uart->send(ManagedString("LED lights set\r\n"));
 }
 
 // Function to handle mode commands starting with MOD_
