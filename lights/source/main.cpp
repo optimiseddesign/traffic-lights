@@ -6,7 +6,8 @@ MicroBit uBit;
 MicroBitUARTService *uart;
 
 // Traffic light GPIO pins (HIGH = on)
-// P3/P4/P7/P10 avoided as they drive the 5x5 LED matrix, P5 is button A
+// P3/P4/P7/P10 avoided as they drive the 5x5 LED matrix
+// P5 is button A (party button, external button wired in parallel)
 #define RED_PIN     uBit.io.P2
 #define AMBER_PIN   uBit.io.P8
 #define GREEN_PIN   uBit.io.P9
@@ -19,13 +20,15 @@ struct LightLevels {
     uint8_t green;
 };
 
-//                                            R    A    G
-static const LightLevels LIGHT_OFF       = {  0,   0,   0};
-static const LightLevels LIGHT_RED       = {255,   0,   0};
-static const LightLevels LIGHT_AMBER     = {  0, 255,   0};
-static const LightLevels LIGHT_GREEN     = {  0,   0, 255};
-static const LightLevels LIGHT_RED_AMBER = {255, 255,   0};
-static const LightLevels LIGHT_ALL       = {255, 255, 255};
+//                                              R    A    G
+static const LightLevels LIGHT_OFF         = {  0,   0,   0};
+static const LightLevels LIGHT_RED         = {255,   0,   0};
+static const LightLevels LIGHT_AMBER       = {  0, 255,   0};
+static const LightLevels LIGHT_GREEN       = {  0,   0, 255};
+static const LightLevels LIGHT_RED_AMBER   = {255, 255,   0};
+static const LightLevels LIGHT_RED_GREEN   = {255,   0, 255};
+static const LightLevels LIGHT_AMBER_GREEN = {  0, 255, 255};
+static const LightLevels LIGHT_ALL         = {255, 255, 255};
 
 // One step of a light sequence: which lights are on and for how long
 struct SequenceStep {
@@ -42,9 +45,16 @@ static const SequenceStep UK_TRAFFIC_SEQUENCE[] = {
     {LIGHT_AMBER,      3000},
 };
 
-// Operating modes: local UK traffic cycle, or lights held by Bluetooth LED_ commands
+// Every combination with at least one light on, picked at random in party mode
+static const LightLevels PARTY_LIGHTS[] = {
+    LIGHT_RED, LIGHT_AMBER, LIGHT_GREEN, LIGHT_RED_AMBER,
+    LIGHT_RED_GREEN, LIGHT_AMBER_GREEN, LIGHT_ALL,
+};
+static const int PARTY_LIGHTS_COUNT = sizeof(PARTY_LIGHTS) / sizeof(PARTY_LIGHTS[0]);
+
+// Operating modes: local UK traffic cycle or party, or lights held by Bluetooth LED_ commands
 // Only the main loop drives the lights - handlers just set the mode and what to show
-enum Mode { MODE_TRAFFIC, MODE_BLE };
+enum Mode { MODE_TRAFFIC, MODE_PARTY, MODE_BLE };
 static Mode mode = MODE_TRAFFIC;
 static LightLevels bleLights = LIGHT_OFF;   // lights held while in MODE_BLE
 
@@ -73,10 +83,18 @@ const char * const cross_emoji =
 "    000,255,000,255,000\n"
 "    255,000,000,000,255\n";
 
+const char * const party_emoji =
+"    255,000,255,000,255\n"
+"    000,255,255,255,000\n"
+"    255,255,000,255,255\n"
+"    000,255,255,255,000\n"
+"    255,000,255,000,255\n";
+
 // Create global image objects from the patterns
 MicroBitImage heartImage(heart_emoji);
 MicroBitImage tickImage(tick_emoji);
 MicroBitImage crossImage(cross_emoji);
+MicroBitImage partyImage(party_emoji);
 
 // Switch each light on or off to match the given brightness (PWM to be added later)
 static void setLights(LightLevels lights)
@@ -86,8 +104,21 @@ static void setLights(LightLevels lights)
     GREEN_PIN.setDigitalValue(lights.green > 0 ? 1 : 0);
 }
 
+// Sound and icon feedback when the mode changes
+static void onModeChanged(Mode oldMode, Mode newMode)
+{
+    // Party starts with a giggle and the party icon; leaving it shows the heart again
+    if (newMode == MODE_PARTY && oldMode != MODE_PARTY) {
+        uBit.audio.soundExpressions.playAsync("giggle");
+        uBit.display.print(partyImage);
+    } else if (newMode != MODE_PARTY && oldMode == MODE_PARTY) {
+        uBit.display.print(heartImage);
+    }
+}
+
 static void setMode(Mode newMode)
 {
+    onModeChanged(mode, newMode);
     mode = newMode;
     modeChangeCount++;
 }
@@ -101,6 +132,17 @@ static bool waitMs(int durationMs)
         if (modeChangeCount != startCount) return false;
     }
     return true;
+}
+
+// Show a random light combination for 60-600ms, never the same one twice running
+static void runPartyStep()
+{
+    static int partyIndex = 0;
+
+    // Move 1 to (count - 1) places round the list, so it always lands on a different combination
+    partyIndex = (partyIndex + 1 + uBit.random(PARTY_LIGHTS_COUNT - 1)) % PARTY_LIGHTS_COUNT;
+    setLights(PARTY_LIGHTS[partyIndex]);
+    waitMs(60 + uBit.random(541));
 }
 
 // Function to handle LED commands starting with LED_
@@ -129,6 +171,9 @@ static void handleModeCommand(ManagedString modeCmd) {
     if (modeCmd == "TRAFFIC") {
         setMode(MODE_TRAFFIC);
         uart->send(ManagedString("Mode: traffic\r\n"));
+    } else if (modeCmd == "PARTY") {
+        setMode(MODE_PARTY);
+        uart->send(ManagedString("Mode: party\r\n"));
     } else {
         uBit.audio.soundExpressions.playAsync("sad");
         uart->send(ManagedString("ERROR: unrecognised MOD_ command\r\n"));
@@ -184,6 +229,12 @@ static void onDisconnected(MicroBitEvent)
 
     // Hand control back to the local traffic cycle
     if (mode == MODE_BLE) setMode(MODE_TRAFFIC);
+}
+
+static void onPartyButton(MicroBitEvent)
+{
+    // Toggle party on/off; from Bluetooth control this takes back local control into party
+    setMode(mode == MODE_PARTY ? MODE_TRAFFIC : MODE_PARTY);
 }
 
 static void onDelim(MicroBitEvent)
@@ -252,6 +303,9 @@ int main()
     uBit.messageBus.listen(MICROBIT_ID_BLE, MICROBIT_BLE_EVT_DISCONNECTED, onDisconnected);
     uBit.messageBus.listen(MICROBIT_ID_BLE_UART, MICROBIT_UART_S_EVT_DELIM_MATCH, onDelim);
 
+    // Party button: act on press (not click, which CODAL drops if held over 1s)
+    uBit.messageBus.listen(MICROBIT_ID_BUTTON_A, MICROBIT_BUTTON_EVT_DOWN, onPartyButton);
+
     // Create BLE services to enable advertising and discovery
     new MicroBitButtonService(*uBit.ble);           // Button service for standard micro:bit profile
     uart = new MicroBitUARTService(*uBit.ble, 32, 32);
@@ -266,6 +320,10 @@ int main()
                     setLights(step.lights);
                     if (!waitMs(step.durationMs)) break;
                 }
+                break;
+
+            case MODE_PARTY:
+                runPartyStep();
                 break;
 
             case MODE_BLE:
