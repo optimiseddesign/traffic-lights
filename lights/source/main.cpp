@@ -5,15 +5,14 @@
 MicroBit uBit;
 MicroBitUARTService *uart;
 
-// Traffic light GPIO pins (HIGH = on)
+// Traffic light GPIO pins (HIGH = on, PWM for brightness)
 // P3/P4/P7/P10 avoided as they drive the 5x5 LED matrix
 // P5 is button A (party button, external button wired in parallel)
 #define RED_PIN     uBit.io.P2
 #define AMBER_PIN   uBit.io.P8
 #define GREEN_PIN   uBit.io.P9
 
-// Brightness of each light, like an RGB colour: 0 = off, 255 = full
-// On/off only for now (any non-zero value is on) until PWM brightness is added
+// Brightness of each light, like an RGB colour: 0 = off, 255 = full (PWM)
 struct LightLevels {
     uint8_t red;
     uint8_t amber;
@@ -56,7 +55,9 @@ static const int PARTY_LIGHTS_COUNT = sizeof(PARTY_LIGHTS) / sizeof(PARTY_LIGHTS
 // Only the main loop drives the lights - handlers just set the mode and what to show
 enum Mode { MODE_TRAFFIC, MODE_PARTY, MODE_BLE };
 static Mode mode = MODE_TRAFFIC;
-static LightLevels bleLights = LIGHT_OFF;   // lights held while in MODE_BLE
+static LightLevels bleLights = LIGHT_OFF;       // lights held while in MODE_BLE
+static int bleFadeMs = 0;                       // fade time to bleLights (0 = instant)
+static LightLevels currentLights = LIGHT_OFF;   // lights showing now, so fades know where to start
 
 // Counts every setMode() call, even to the same mode, so a new command interrupts the current wait
 static int modeChangeCount = 0;
@@ -96,14 +97,6 @@ MicroBitImage tickImage(tick_emoji);
 MicroBitImage crossImage(cross_emoji);
 MicroBitImage partyImage(party_emoji);
 
-// Switch each light on or off to match the given brightness (PWM to be added later)
-static void setLights(LightLevels lights)
-{
-    RED_PIN.setDigitalValue(lights.red > 0 ? 1 : 0);
-    AMBER_PIN.setDigitalValue(lights.amber > 0 ? 1 : 0);
-    GREEN_PIN.setDigitalValue(lights.green > 0 ? 1 : 0);
-}
-
 // Sound and icon feedback when the mode changes
 static void onModeChanged(Mode oldMode, Mode newMode)
 {
@@ -131,6 +124,44 @@ static bool waitMs(int durationMs)
         uBit.sleep(20);
         if (modeChangeCount != startCount) return false;
     }
+    return true;
+}
+
+// Convert a 0-255 brightness level to a 0-1023 PWM duty
+// Halfway between linear and squared: eyes see brightness non-linearly, so this makes
+// dim levels and fades look more even than linear, while keeping low levels visible
+static int levelToDuty(uint8_t level)
+{
+    return level * (level + 255) * 1023 / (2 * 255 * 255);
+}
+
+// Write brightness levels straight to the light pins using PWM - only setLights() calls this
+static void writeLights(LightLevels lights)
+{
+    RED_PIN.setAnalogValue(levelToDuty(lights.red));
+    AMBER_PIN.setAnalogValue(levelToDuty(lights.amber));
+    GREEN_PIN.setAnalogValue(levelToDuty(lights.green));
+    currentLights = lights;
+}
+
+// Change the lights to target, instantly or fading smoothly over fadeMs
+// Returns false if a mode change cut the fade short
+static bool setLights(LightLevels target, int fadeMs = 0)
+{
+    LightLevels start = currentLights;
+
+    // Every 20ms, move each light part way from start to target
+    for (int elapsedMs = 20; elapsedMs < fadeMs; elapsedMs += 20) {
+        LightLevels step;
+        step.red   = start.red   + (target.red   - start.red)   * elapsedMs / fadeMs;
+        step.amber = start.amber + (target.amber - start.amber) * elapsedMs / fadeMs;
+        step.green = start.green + (target.green - start.green) * elapsedMs / fadeMs;
+        writeLights(step);
+
+        if (!waitMs(20)) return false;
+    }
+
+    writeLights(target);
     return true;
 }
 
@@ -180,20 +211,40 @@ static bool parseHexColor(ManagedString hexColor, uint8_t &red, uint8_t &amber, 
     return true;
 }
 
+// Helper function to parse an optional "_TT" fade time suffix (tenths of a second, 00-99) into ms
+static bool parseFadeTime(ManagedString suffix, int &fadeMs) {
+    if (suffix.length() == 0) {
+        fadeMs = 0; // No suffix: instant
+        return true;
+    }
+    if (suffix.length() != 3 || suffix.charAt(0) != '_') return false;
+
+    char t1 = suffix.charAt(1);
+    char t2 = suffix.charAt(2);
+    if (t1 < '0' || t1 > '9' || t2 < '0' || t2 > '9') return false;
+
+    fadeMs = ((t1 - '0') * 10 + (t2 - '0')) * 100;
+    return true;
+}
+
 // Function to handle LED commands starting with LED_
 static void handleLEDCommand(ManagedString ledCmd) {
-    // Expected format: 6-character hex color code (RRAAGG), 00-FF brightness per light
-    // Example: LED_FF0000# for red, LED_00FF00# for amber, LED_0000FF# for green, LED_000000# for off
+    // Expected format: 6-character hex color code (RRAAGG), 00-FF brightness per light,
+    // optionally followed by _TT fade time in tenths of a second (00-99), otherwise instant
+    // Example: LED_FF0000# for red, LED_FF8000# for red + half amber, LED_00FF00_20# fade to amber over 2s
 
     uint8_t red, amber, green;
-    if (parseHexColor(ledCmd, red, amber, green)) {
-        // Hold these lights in Bluetooth mode (the main loop sets them)
+    int fadeMs;
+    if (parseHexColor(ledCmd.substring(0, 6), red, amber, green) &&
+        parseFadeTime(ledCmd.substring(6, ledCmd.length() - 6), fadeMs)) {
+        // Fade to these lights in Bluetooth mode and hold them (the main loop sets them)
         bleLights = {red, amber, green};
+        bleFadeMs = fadeMs;
         setMode(MODE_BLE);
         uart->send(ManagedString("LED lights set\r\n"));
     } else {
         uBit.audio.soundExpressions.playAsync("sad");
-        uart->send(ManagedString("ERROR: invalid LED_ hex color format\r\n"));
+        uart->send(ManagedString("ERROR: invalid LED_ format, use LED_RRAAGG# or LED_RRAAGG_TT#\r\n"));
     }
 }
 
@@ -306,12 +357,10 @@ static void onStart() {
     uBit.audio.soundExpressions.playAsync("hello");
     uBit.display.print(heartImage);
 
-    // Lamp test: flash all lights quickly for 2 seconds
-    for (int elapsedMs = 0; elapsedMs < 2000; elapsedMs += 200) {
-        setLights(LIGHT_ALL);
-        uBit.sleep(100);
-        setLights(LIGHT_OFF);
-        uBit.sleep(100);
+    // Lamp test: fade all lights up and down 3 times (checks PWM dimming)
+    for (int i = 0; i < 3; i++) {
+        setLights(LIGHT_ALL, 400);
+        setLights(LIGHT_OFF, 400);
     }
 }
 
@@ -322,11 +371,20 @@ static void configureOnboardSpeaker()
     uBit.audio.setPinEnabled(false);
 }
 
+static void configureLightPWM()
+{
+    // Put all lights into PWM mode (off), then raise the shared PWM rate from CODAL's 50Hz
+    // default, which visibly flickers, to 1kHz. The rate can only be set once a pin uses PWM
+    setLights(LIGHT_OFF);
+    RED_PIN.setAnalogPeriodUs(1000);
+}
+
 int main()
 {
     // Initialise the micro:bit runtime, and do startup actions
     uBit.init();
     configureOnboardSpeaker();
+    configureLightPWM();
     onStart();
 
     // Register event listeners for Bluetooth connection/disconnection
@@ -358,9 +416,10 @@ int main()
                 break;
 
             case MODE_BLE:
-                // Hold the lights from the last LED_ command until something changes
-                setLights(bleLights);
-                waitMs(1000);
+                // Fade to the lights from the last LED_ command, then hold them until something changes
+                if (setLights(bleLights, bleFadeMs)) {
+                    while (waitMs(1000)) {}
+                }
                 break;
         }
     }
