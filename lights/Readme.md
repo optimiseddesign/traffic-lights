@@ -66,10 +66,12 @@ This micro:bit traffic light firmware provides:
   - `LED_000000#` - All lamps off
   - `LED_00FF00_20#` - Fade to amber only over 2 seconds
   - `LED_000000_50#` - Fade all lamps off over 5 seconds
+  - `LED_?#` - Query the lamps, e.g. reply `OK LED_FF8000`. During a fade this is the level being faded to
 
 - **Mode Commands** (format: `MOD_<MODE>#`):
   - `MOD_TRAFFIC#` - Switch to traffic mode (restarts the cycle from red)
   - `MOD_PARTY#` - Switch to party mode
+  - `MOD_?#` - Query the mode: reply `OK MOD_TRAFFIC`, `OK MOD_PARTY`, or `OK MOD_BLE` while holding lamps from an `LED_` command
 
 - **Audio Commands** (format: `SPK_<SOUND>#`):
   - `SPK_GIGGLE#` - Play "giggle" sound expression
@@ -86,14 +88,23 @@ This micro:bit traffic light firmware provides:
 - **Command Processing**:
   - Commands use structured format with 3-character type identifier and underscore separator (`LED_`, `MOD_`, `SPK_`)
   - All commands must end with `#` delimiter
-  - Every command is echoed back as `Received: <command>`
-  - Successful commands reply with a confirmation: `LED lights set`, `Mode: traffic` or `Mode: party` (`SPK_` commands have no extra reply)
-  - Invalid `LED_` or `MOD_` commands, and unknown command types, reply with an `ERROR:` message and play the "sad" sound
-  - Invalid `SPK_` commands reply with an `ERROR:` message but play no sound, since "sad" is itself a valid sound command
+  - Every command gets exactly one reply line (ending `\r\n`), and every message fits in one 20-byte Bluetooth packet:
+    - `OK` on success, or `OK <answer>` for a query (`OK LED_FF8000`, `OK MOD_PARTY`)
+    - `ERR <reason>` on failure: `ERR bad LED_`, `ERR bad MOD_`, `ERR bad SPK_` or `ERR unknown cmd`
+  - Commands are handled one at a time in the order received, so a client can match replies to its commands in order
+  - Invalid `LED_` or `MOD_` commands, and unknown command types, also play the "sad" sound
+  - Invalid `SPK_` commands play no sound, since "sad" is itself a valid sound command
+
+- **Status Messages** (`STA_`, sent without being asked):
+  - `STA_MOD_<MODE>` (`TRAFFIC`, `PARTY` or `BLE`) and `STA_LED_<RRAAGG>`, using the same form as the query answers
+  - Both are sent 1 s after a client connects
+  - `STA_MOD_` is sent whenever the mode changes, by command, party button or disconnect
+  - `STA_LED_` is sent whenever new lamp levels are set: each traffic cycle step, and each `LED_` command (once, with the levels being faded to). Not for each party mode flash (too frequent)
+  - They can arrive before a command's reply, so read `STA_` lines separately from `OK`/`ERR`
 
 - **Hardware Integration**:
   - Lamps driven from micro:bit pins through a FET LED driver board, with 1 kHz PWM for flicker-free dimming
-  - Brightness curve sits halfway between linear and squared, so dim levels and fades look even while low levels stay visible
+  - Squared brightness curve, so dim levels and fades look even. Only level `00` is off: `01`-`08` all give the minimum PWM duty (1/1023)
   - Audio on the onboard speaker only (P0 audio output disabled)
   - All lamps off at startup until the lamp test runs
 
@@ -139,14 +150,15 @@ You can test the BLE UART functionality using the **Web Device CLI** tool, which
 3. **Press button A** (or the external button) - party mode should start with a giggle and the sparkle pattern; press again to return to traffic mode
 4. **Open the Web Device CLI** in a Web Bluetooth enabled browser (Chrome 56+, Edge 79+, etc.)
 5. **Click "Connect"** and select your micro:bit from the device list
-6. **Wait for connection** - you should see the tick (✓) pattern on your micro:bit and `Ready to receive...` in the web interface
+6. **Wait for connection** - you should see the tick (✓) pattern on your micro:bit, and the current state in the web interface, e.g. `STA_MOD_TRAFFIC` and `STA_LED_FF0000`. A new `STA_LED_` line follows each traffic cycle step
 7. **Send commands** through the web interface:
    - **LED Commands**: `LED_FF0000#` (red), `LED_00FF00#` (amber), `LED_0000FF#` (green), `LED_404040#` (all dim), `LED_000000#` (off)
    - **Fade Commands**: `LED_FFFFFF_20#` (fade all on over 2 s), `LED_000000_50#` (fade all off over 5 s)
    - **Mode Commands**: `MOD_TRAFFIC#`, `MOD_PARTY#`
+   - **Query Commands**: `LED_?#`, `MOD_?#`
    - **Audio Commands**: `SPK_HAPPY#`, `SPK_GIGGLE#`, etc.
    - Watch for lamp changes, mode changes and audio feedback on the micro:bit
-   - See command echoes, confirmations and error messages in the web interface
+   - See one `OK` or `ERR` reply per command in the web interface, and `STA_` lines when the button or traffic cycle changes things
 8. **Disconnect** - you should see the cross (✗) pattern, and if Bluetooth was holding the lamps, the traffic cycle restarts from red
 
 ### Example Commands
@@ -159,6 +171,8 @@ LED_404040#     # All lamps dim
 LED_000000#     # All lamps off
 MOD_PARTY#      # Start party mode
 MOD_TRAFFIC#    # Back to the UK traffic cycle, from red
+LED_?#          # Query the lamps, e.g. OK LED_FF0000
+MOD_?#          # Query the mode, e.g. OK MOD_TRAFFIC
 SPK_HAPPY#      # Play happy sound
 ```
 
@@ -266,15 +280,15 @@ If VS Code tasks are not visible:
 Almost all of the logic is in `source/main.cpp`:
 
 - **Definitions** - Lamp pins, `LightLevels` (red, amber and green brightness, 0-255 each), the `LIGHT_*` constants, `SequenceStep` (lamps plus how long to hold them), `UK_TRAFFIC_SEQUENCE` and `PARTY_LIGHTS`
-- **State** - `mode`, `bleLights`, `bleFadeMs`, `currentLights` and `modeChangeCount`
+- **State** - `mode`, `bleLights`, `bleFadeMs`, `currentLights` and `modeChangeCount`, plus `modeStatus` and `lightsStatus`: the mode and lamps as text (e.g. `MOD_TRAFFIC`, `LED_FF0000`) for `STA_` messages and queries
 - **Mode and Timing**:
-  - `setMode()` changes the mode and increments `modeChangeCount`; `onModeChanged()` plays the mode sounds and shows the icons
+  - `setMode()` changes the mode, increments `modeChangeCount`, updates `modeStatus` and sends `STA_MOD_` if the mode changed; `onModeChanged()` plays the mode sounds and shows the icons
   - `waitMs()` sleeps in 20 ms slices and returns `false` early if the mode changed during the wait
   - Only the main loop drives the lamps; button and command handlers just change the mode
 - **Lamps**:
   - `levelToDuty()` converts a 0-255 level to a 0-1023 PWM duty using the brightness curve
   - `writeLights()` is the only code that writes to the pins
-  - `setLights(target, fadeMs = 0)` is what everything else calls, for both instant changes and fades. A fade starts from the lamps showing now, so a new command partway through a fade continues smoothly
+  - `setLights(target, fadeMs = 0)` is what everything else calls, for both instant changes and fades. A fade starts from the lamps showing now, so a new command partway through a fade continues smoothly. It updates `lightsStatus` with the target and sends `STA_LED_` (except in party mode)
   - `configureLightPWM()` raises the shared PWM rate from CODAL's 50 Hz default (which flickers) to 1 kHz. This only works once the pins are already in PWM mode
 - **Commands** - `onDelim()` splits a command into its 4-character type and payload, then calls `handleLEDCommand()`, `handleModeCommand()` or `handleSoundCommand()`. `hexCharToValue()` and `parseHexColor()` parse the hex levels, and `parseFadeTime()` reads the optional `_TT` suffix
 
@@ -324,7 +338,7 @@ cp codal.dev.json codal.json
 
 ### Lamp Issues
 - **No lamps at startup**: Check the wiring from P2, P8 and P9 to the FET LED driver board, the shared GND, and the driver board's lamp supply. The lamp test should fade all three up and down 3 times
-- **Dim levels not visible**: `LED_` levels `01`-`02` are barely visible because of the brightness curve; try `10` or higher
+- **Dim levels not visible**: `LED_` levels `01`-`08` all give the minimum PWM duty (about 1 µs on in every 1 ms), which the driver board may barely show or not respond to; try `20` or higher
 - **Flicker**: The PWM rate is set to 1 kHz at startup. If lamps flicker at 50 Hz, check that `configureLightPWM()` still runs after the pins are put into PWM mode
 - **Shimmer during slow fades**: CODAL restarts the PWM output on every update. If this shows, `writeLights()` could be changed to update only the lamps whose level changed
 
@@ -345,7 +359,7 @@ cp codal.dev.json codal.json
   - Mode commands: `MOD_TRAFFIC#` or `MOD_PARTY#` (upper case)
   - Audio commands: `SPK_<SOUND>#` (e.g., `SPK_HAPPY#`, upper case)
 - Check that the micro:bit shows tick (✓) pattern when connected
-- Verify the received command appears in the web interface echo
+- Check each command gets an `OK` or `ERR` reply; no reply at all usually means the `#` was missing
 - For LED commands, ensure hex codes are exactly 6 characters (RRAAGG format), and any fade suffix is `_` plus exactly 2 digits (`_1`, `_AB` and `_200` are rejected)
-- Invalid `LED_` and `MOD_` commands trigger "sad" audio feedback and an `ERROR:` message; invalid `SPK_` commands only give the `ERROR:` message
+- Invalid `LED_` and `MOD_` commands trigger "sad" audio feedback and an `ERR` reply; invalid `SPK_` commands only give the `ERR` reply
 - After an `LED_` command the lamps stay as set until another command, a button press or a disconnect; send `MOD_TRAFFIC#` to resume the traffic cycle

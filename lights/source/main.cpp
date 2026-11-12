@@ -62,6 +62,10 @@ static LightLevels currentLights = LIGHT_OFF;   // lights showing now, so fades 
 // Counts every setMode() call, even to the same mode, so a new command interrupts the current wait
 static int modeChangeCount = 0;
 
+// Mode and lights (showing or being faded to) as text, for STA_ messages and MOD_?#/LED_?# queries
+static const char *modeStatus = "MOD_TRAFFIC";
+static char lightsStatus[] = "LED_000000";
+
 // Define custom 5x5 LED patterns using CODAL string format
 const char * const heart_emoji =
 "    000,255,000,255,000\n"
@@ -111,9 +115,19 @@ static void onModeChanged(Mode oldMode, Mode newMode)
 
 static void setMode(Mode newMode)
 {
-    onModeChanged(mode, newMode);
+    Mode oldMode = mode;
+    onModeChanged(oldMode, newMode);
     mode = newMode;
     modeChangeCount++;
+
+    // Remember the mode as text, and tell the client if it changed
+    switch (mode) {
+        case MODE_TRAFFIC: modeStatus = "MOD_TRAFFIC"; break;
+        case MODE_PARTY:   modeStatus = "MOD_PARTY";   break;
+        case MODE_BLE:     modeStatus = "MOD_BLE";     break;
+        default:           modeStatus = "MOD_UNKNOWN"; break;
+    }
+    if (mode != oldMode) uart->send(ManagedString("STA_") + modeStatus + "\r\n");
 }
 
 // Sleep for durationMs in short slices, returning false early if the mode changes
@@ -128,11 +142,11 @@ static bool waitMs(int durationMs)
 }
 
 // Convert a 0-255 brightness level to a 0-1023 PWM duty
-// Halfway between linear and squared: eyes see brightness non-linearly, so this makes
-// dim levels and fades look more even than linear, while keeping low levels visible
+// Squared: eyes see brightness non-linearly, so this makes dim levels and fades look even.
+// Rounds up, so only level 0 is fully off (levels 1-8 all give the minimum duty of 1)
 static int levelToDuty(uint8_t level)
 {
-    return level * (level + 255) * 1023 / (2 * 255 * 255);
+    return (level * level * 1023 + 255 * 255 - 1) / (255 * 255);
 }
 
 // Write brightness levels straight to the light pins using PWM - only setLights() calls this
@@ -149,6 +163,17 @@ static void writeLights(LightLevels lights)
 static bool setLights(LightLevels target, int fadeMs = 0)
 {
     LightLevels start = currentLights;
+
+    // Remember the target as text (e.g. LED_FF8000), and tell the client - but not for
+    // every party flash (too frequent), or in the startup lamp test (uart not set up yet)
+    static const char HEX_DIGITS[] = "0123456789ABCDEF";
+    lightsStatus[4] = HEX_DIGITS[target.red >> 4];
+    lightsStatus[5] = HEX_DIGITS[target.red & 0x0F];
+    lightsStatus[6] = HEX_DIGITS[target.amber >> 4];
+    lightsStatus[7] = HEX_DIGITS[target.amber & 0x0F];
+    lightsStatus[8] = HEX_DIGITS[target.green >> 4];
+    lightsStatus[9] = HEX_DIGITS[target.green & 0x0F];
+    if (uart && mode != MODE_PARTY) uart->send(ManagedString("STA_") + lightsStatus + "\r\n");
 
     // Every 20ms, move each light part way from start to target
     for (int elapsedMs = 20; elapsedMs < fadeMs; elapsedMs += 20) {
@@ -232,33 +257,39 @@ static void handleLEDCommand(ManagedString ledCmd) {
     // Expected format: 6-character hex color code (RRAAGG), 00-FF brightness per light,
     // optionally followed by _TT fade time in tenths of a second (00-99), otherwise instant
     // Example: LED_FF0000# for red, LED_FF8000# for red + half amber, LED_00FF00_20# fade to amber over 2s
+    // LED_?# queries the lights showing (or being faded to), e.g. reply "OK LED_FF8000"
 
     uint8_t red, amber, green;
     int fadeMs;
-    if (parseHexColor(ledCmd.substring(0, 6), red, amber, green) &&
-        parseFadeTime(ledCmd.substring(6, ledCmd.length() - 6), fadeMs)) {
+    if (ledCmd == "?") {
+        uart->send(ManagedString("OK ") + lightsStatus + "\r\n");
+    } else if (parseHexColor(ledCmd.substring(0, 6), red, amber, green) &&
+               parseFadeTime(ledCmd.substring(6, ledCmd.length() - 6), fadeMs)) {
         // Fade to these lights in Bluetooth mode and hold them (the main loop sets them)
         bleLights = {red, amber, green};
         bleFadeMs = fadeMs;
         setMode(MODE_BLE);
-        uart->send(ManagedString("LED lights set\r\n"));
+        uart->send(ManagedString("OK\r\n"));
     } else {
         uBit.audio.soundExpressions.playAsync("sad");
-        uart->send(ManagedString("ERROR: invalid LED_ format, use LED_RRAAGG# or LED_RRAAGG_TT#\r\n"));
+        uart->send(ManagedString("ERR bad LED_\r\n"));
     }
 }
 
 // Function to handle mode commands starting with MOD_
+// MOD_?# queries the mode, e.g. reply "OK MOD_TRAFFIC" (MOD_BLE while holding LED_ lights)
 static void handleModeCommand(ManagedString modeCmd) {
-    if (modeCmd == "TRAFFIC") {
+    if (modeCmd == "?") {
+        uart->send(ManagedString("OK ") + modeStatus + "\r\n");
+    } else if (modeCmd == "TRAFFIC") {
         setMode(MODE_TRAFFIC);
-        uart->send(ManagedString("Mode: traffic\r\n"));
+        uart->send(ManagedString("OK\r\n"));
     } else if (modeCmd == "PARTY") {
         setMode(MODE_PARTY);
-        uart->send(ManagedString("Mode: party\r\n"));
+        uart->send(ManagedString("OK\r\n"));
     } else {
         uBit.audio.soundExpressions.playAsync("sad");
-        uart->send(ManagedString("ERROR: unrecognised MOD_ command\r\n"));
+        uart->send(ManagedString("ERR bad MOD_\r\n"));
     }
 }
 
@@ -285,12 +316,13 @@ static void handleSoundCommand(ManagedString soundCmd) {
     for (const auto &mapping : SOUND_COMMANDS) {
         if (soundCmd == mapping.command) {
             uBit.audio.soundExpressions.playAsync(mapping.expression);
+            uart->send(ManagedString("OK\r\n"));
             return;
         }
     }
 
     // No error sound here, as "sad" is also a valid SPK_ command - silence shows the failure
-    uart->send(ManagedString("ERROR: unrecognised SPK_ command\r\n"));
+    uart->send(ManagedString("ERR bad SPK_\r\n"));
 }
 
 static void onConnected(MicroBitEvent)
@@ -301,7 +333,9 @@ static void onConnected(MicroBitEvent)
     // Additional small delay to ensure UART service is ready
     uBit.sleep(1000);
 
-    uart->send(ManagedString("Ready to receive...\r\n"));
+    // Tell the new client the current mode and lights
+    uart->send(ManagedString("STA_") + modeStatus + "\r\n");
+    uart->send(ManagedString("STA_") + lightsStatus + "\r\n");
 }
 
 static void onDisconnected(MicroBitEvent)
@@ -332,14 +366,11 @@ static void onDelim(MicroBitEvent)
         }
     }
 
-    // Echo back the cleaned received string
-    uart->send(ManagedString("Received: ") + r_clean + ManagedString("\r\n"));
-
     // Split into the 4-character command type (e.g. LED_) and its payload (empty if none)
     ManagedString cmdType = r_clean.substring(0, 4);
     ManagedString payload = r_clean.substring(4, r_clean.length() - 4);
 
-    // Route commands to appropriate handlers
+    // Route commands to appropriate handlers; each sends exactly one reply: OK (plus any answer) or ERR <reason>
     if (cmdType == "LED_") {
         handleLEDCommand(payload);
     } else if (cmdType == "MOD_") {
@@ -349,7 +380,7 @@ static void onDelim(MicroBitEvent)
     } else {
         // Default behavior for unknown commands
         uBit.audio.soundExpressions.playAsync("sad");
-        uart->send(ManagedString("ERROR: unrecognised command type\r\n"));
+        uart->send(ManagedString("ERR unknown cmd\r\n"));
     }
 }
 
@@ -397,7 +428,9 @@ int main()
 
     // Create BLE services to enable advertising and discovery
     new MicroBitButtonService(*uBit.ble);           // Button service for standard micro:bit profile
-    uart = new MicroBitUARTService(*uBit.ble, 32, 32);
+    // 128 byte transmit buffer, so a reply and STA_ messages sent at the same time all fit
+    // and never get mixed up (the default 32 bytes fits only about two lines)
+    uart = new MicroBitUARTService(*uBit.ble, 32, 128);
     uart->eventOn("#");
 
     // Run the current mode forever; each pass ends early when the mode changes
