@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Traffic Lights</title>
+<style>
+:root {
+    color-scheme: light dark;
+    --bg: #f6f6f4;
+    --surface: #ffffff;
+    --text: #1c1c1e;
+    --muted: #6e6e73;
+    --border: #e2e2e0;
+    --accent: #1c1c1e;
+    --accent-text: #ffffff;
+    --housing: #222224;
+    --red: #ff3b30;
+    --amber: #ff9f0a;
+    --green: #30d158;
+    --busy: #ff9f0a;
+    --error: #e5342a;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #111113;
+        --surface: #1c1c1e;
+        --text: #f2f2f7;
+        --muted: #98989f;
+        --border: #2c2c2e;
+        --accent: #f2f2f7;
+        --accent-text: #111113;
+        --housing: #000000;
+        --error: #ff6961;
+    }
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+}
+
+main {
+    max-width: 420px;
+    margin: 0 auto;
+    padding: 24px 16px 48px;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+}
+
+button, select, input { font: inherit; color: inherit; }
+
+button {
+    cursor: pointer;
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+}
+
+button:disabled, select:disabled, input:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+}
+
+.primary, .modes [aria-pressed="true"] {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-text);
+}
+
+/* Header and connection status */
+header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+h1 { margin: 0; font-size: 1.25rem; }
+
+.status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 0 0;
+    font-size: 0.875rem;
+    color: var(--muted);
+}
+
+.dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--muted);
+}
+
+[data-connection="connecting"] .dot { background: var(--busy); }
+[data-connection="connected"] .dot { background: var(--green); }
+
+/* Everything below the header; disabled as a group while disconnected */
+fieldset {
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+}
+
+h2 {
+    margin: 0 0 8px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+.hint { margin: 8px 0 0; font-size: 0.8rem; color: var(--muted); }
+
+/* Traffic light */
+.light {
+    align-self: center;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 18px;
+    border-radius: 28px;
+    background: var(--housing);
+}
+
+.lamp {
+    width: 88px;
+    height: 88px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--colour) 18%, #111111);
+    transition: background 0.2s, box-shadow 0.2s;
+}
+
+.lamp[aria-pressed="true"] {
+    background: var(--colour);
+    box-shadow: 0 0 28px color-mix(in srgb, var(--colour) 70%, transparent);
+}
+
+.lamp:disabled { opacity: 1; }
+.lamp:focus-visible { outline: 3px solid var(--text); outline-offset: 3px; }
+
+.fade {
+    align-self: center;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.875rem;
+    color: var(--muted);
+}
+
+select {
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+}
+
+/* Mode and sound buttons */
+.modes {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+}
+
+.sounds {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.sounds button {
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 0.875rem;
+}
+
+/* Log and raw command */
+summary { cursor: pointer; font-size: 0.875rem; color: var(--muted); }
+
+#log {
+    max-height: 220px;
+    overflow-y: auto;
+    margin: 8px 0;
+    padding: 8px 10px;
+    list-style: none;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    font: 0.8rem ui-monospace, Consolas, monospace;
+}
+
+#log .tx { color: var(--muted); }
+#log .error { color: var(--error); }
+
+form { display: flex; gap: 8px; }
+
+form input {
+    flex: 1;
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+}
+</style>
+</head>
+<body>
+<main>
+    <header id="header">
+        <div>
+            <h1>Traffic Lights</h1>
+            <p class="status"><span class="dot"></span><span id="status"></span></p>
+        </div>
+        <button id="connect" class="primary" data-action="connect"></button>
+    </header>
+
+    <fieldset id="controls">
+        <div class="light">
+            <button class="lamp" data-lamp="red" aria-label="Red" style="--colour: var(--red)"></button>
+            <button class="lamp" data-lamp="amber" aria-label="Amber" style="--colour: var(--amber)"></button>
+            <button class="lamp" data-lamp="green" aria-label="Green" style="--colour: var(--green)"></button>
+        </div>
+
+        <label class="fade">Fade <select id="fade"></select></label>
+
+        <section>
+            <h2>Mode · <span id="mode"></span></h2>
+            <div class="modes">
+                <button data-mode="traffic">Traffic</button>
+                <button data-mode="party">Party</button>
+                <button data-action="off">Off</button>
+            </div>
+            <p class="hint">Tap a lamp to take manual control. The party button on the device isn't reported here, so the mode shown can go out of date.</p>
+        </section>
+
+        <section>
+            <h2>Sounds</h2>
+            <div id="sounds" class="sounds"></div>
+        </section>
+
+        <details>
+            <summary>Log</summary>
+            <ol id="log"></ol>
+            <form id="raw" autocomplete="off">
+                <input id="rawCommand" placeholder="Raw command, e.g. LED_FF8000_20#" aria-label="Raw command" required>
+                <button>Send</button>
+            </form>
+        </details>
+    </fieldset>
+</main>
+
+<script type="module">
+// Nordic UART Service. The micro:bit swaps the usual TX/RX roles:
+// commands are written to ...0003 and replies arrive as notifications on ...0002
+const NUS_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const NUS_WRITE = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+const NUS_NOTIFY = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+
+const OFF = Object.freeze({ red: 0, amber: 0, green: 0 });
+const SOUNDS = ['GIGGLE', 'HAPPY', 'HELLO', 'MYSTERIOUS', 'SAD', 'SLIDE', 'SOARING', 'SPRING', 'TWINKLE', 'YAWN'];
+const FADES = [
+    { label: 'Instant', tenths: 0 },
+    { label: '0.5 s', tenths: 5 },
+    { label: '1 s', tenths: 10 },
+    { label: '2 s', tenths: 20 },
+    { label: '5 s', tenths: 50 },
+];
+const MODE_LABELS = { traffic: 'Traffic cycle', party: 'Party', manual: 'Manual' };
+const STATUS_LABELS = { unsupported: 'Web Bluetooth not supported in this browser', disconnected: 'Disconnected', connecting: 'Connecting…' };
+const LOG_PREFIX = { tx: '→', rx: '←', error: '!', info: '·' };
+const MAX_LOG_LINES = 100;
+
+// Page state. Lamp levels are 0-255 to match the firmware, ready for dimming later
+const state = {
+    connection: navigator.bluetooth ? 'disconnected' : 'unsupported',
+    deviceName: '',
+    mode: 'traffic',
+    levels: { ...OFF },
+    fadeTenths: 0,
+};
+
+let device = null;
+let writeCharacteristic = null;
+let writeQueue = Promise.resolve();
+let rxBuffer = '';
+
+const ui = {
+    header: document.getElementById('header'),
+    status: document.getElementById('status'),
+    connect: document.getElementById('connect'),
+    controls: document.getElementById('controls'),
+    lamps: document.querySelectorAll('[data-lamp]'),
+    modes: document.querySelectorAll('[data-mode]'),
+    mode: document.getElementById('mode'),
+    fade: document.getElementById('fade'),
+    sounds: document.getElementById('sounds'),
+    log: document.getElementById('log'),
+    raw: document.getElementById('raw'),
+    rawCommand: document.getElementById('rawCommand'),
+};
+
+// ---- Commands (see lights/README.md) ----
+
+const hex2 = (level) => level.toString(16).toUpperCase().padStart(2, '0');
+
+function ledCommand({ red, amber, green }, fadeTenths = 0) {
+    const fade = fadeTenths > 0 ? `_${String(fadeTenths).padStart(2, '0')}` : '';
+    return `LED_${hex2(red)}${hex2(amber)}${hex2(green)}${fade}#`;
+}
+
+const modeCommand = (mode) => `MOD_${mode.toUpperCase()}#`;
+const soundCommand = (sound) => `SPK_${sound}#`;
+
+// ---- Bluetooth ----
+
+async function connect() {
+    state.connection = 'connecting';
+    render();
+
+    try {
+        device = await navigator.bluetooth.requestDevice({
+            filters: [{ namePrefix: 'BBC micro:bit' }],
+            optionalServices: [NUS_SERVICE],
+        });
+        device.addEventListener('gattserverdisconnected', onDisconnected);
+
+        const server = await device.gatt.connect();
+        const service = await server.getPrimaryService(NUS_SERVICE);
+        const notifyCharacteristic = await service.getCharacteristic(NUS_NOTIFY);
+        notifyCharacteristic.addEventListener('characteristicvaluechanged', onNotify);
+        await notifyCharacteristic.startNotifications();
+        writeCharacteristic = await service.getCharacteristic(NUS_WRITE);
+
+        state.connection = 'connected';
+        state.deviceName = device.name || 'micro:bit';
+        log('info', `Connected to ${state.deviceName}`);
+    } catch (error) {
+        log('error', error.message);
+        if (device?.gatt.connected) {
+            device.gatt.disconnect(); // fires gattserverdisconnected
+        } else {
+            onDisconnected();
+        }
+    }
+    render();
+}
+
+function disconnect() {
+    device?.gatt.disconnect(); // fires gattserverdisconnected
+}
+
+// The firmware goes back to the traffic cycle on disconnect, so the page does too
+function onDisconnected() {
+    if (writeCharacteristic) log('info', 'Disconnected');
+    device?.removeEventListener('gattserverdisconnected', onDisconnected);
+    device = null;
+    writeCharacteristic = null;
+    rxBuffer = '';
+    state.connection = 'disconnected';
+    state.mode = 'traffic';
+    state.levels = { ...OFF };
+    render();
+}
+
+// Replies end in \r\n and may be split across notifications, so buffer until a full line
+function onNotify(event) {
+    rxBuffer += new TextDecoder().decode(event.target.value);
+    const lines = rxBuffer.split(/\r?\n/);
+    rxBuffer = lines.pop();
+    for (const line of lines.filter(Boolean)) {
+        log(line.startsWith('ERROR') ? 'error' : 'rx', line);
+    }
+}
+
+// Writes are queued so a new command never overlaps one still in progress
+function send(command) {
+    const characteristic = writeCharacteristic;
+    if (!characteristic) return;
+
+    log('tx', command);
+    const data = new TextEncoder().encode(command);
+    writeQueue = writeQueue
+        .then(() => characteristic.writeValue(data))
+        .catch((error) => log('error', `Send failed: ${error.message}`));
+}
+
+// ---- Actions ----
+
+function toggleLamp(lamp) {
+    state.mode = 'manual';
+    state.levels[lamp] = state.levels[lamp] > 0 ? 0 : 255;
+    send(ledCommand(state.levels, state.fadeTenths));
+}
+
+// The page can't see which lamps the traffic cycle or party is showing, so it shows them off
+function setMode(mode) {
+    state.mode = mode;
+    state.levels = { ...OFF };
+    send(modeCommand(mode));
+}
+
+function allOff() {
+    state.mode = 'manual';
+    state.levels = { ...OFF };
+    send(ledCommand(state.levels, state.fadeTenths));
+}
+
+// ---- View ----
+
+function render() {
+    const connected = state.connection === 'connected';
+
+    ui.header.dataset.connection = state.connection;
+    ui.status.textContent = connected ? `Connected · ${state.deviceName}` : STATUS_LABELS[state.connection];
+    ui.connect.textContent = connected ? 'Disconnect' : 'Connect';
+    ui.connect.disabled = state.connection === 'unsupported' || state.connection === 'connecting';
+    ui.controls.disabled = !connected;
+
+    for (const lamp of ui.lamps) {
+        lamp.setAttribute('aria-pressed', state.levels[lamp.dataset.lamp] > 0);
+    }
+    for (const button of ui.modes) {
+        button.setAttribute('aria-pressed', button.dataset.mode === state.mode);
+    }
+    ui.mode.textContent = MODE_LABELS[state.mode];
+}
+
+function log(kind, text) {
+    const line = document.createElement('li');
+    line.className = kind;
+    line.textContent = `${new Date().toLocaleTimeString()} ${LOG_PREFIX[kind]} ${text}`;
+    ui.log.prepend(line);
+    ui.log.children[MAX_LOG_LINES]?.remove();
+}
+
+// ---- Setup ----
+
+for (const { label, tenths } of FADES) {
+    ui.fade.add(new Option(label, tenths));
+}
+
+for (const sound of SOUNDS) {
+    const button = document.createElement('button');
+    button.dataset.sound = sound;
+    button.textContent = sound[0] + sound.slice(1).toLowerCase();
+    ui.sounds.append(button);
+}
+
+document.addEventListener('click', (event) => {
+    const button = event.target.closest('button');
+    if (!button || button.form) return;
+
+    const { lamp, mode, sound, action } = button.dataset;
+    if (lamp) toggleLamp(lamp);
+    else if (mode) setMode(mode);
+    else if (sound) send(soundCommand(sound));
+    else if (action === 'off') allOff();
+    else if (action === 'connect') state.connection === 'connected' ? disconnect() : connect();
+    render();
+});
+
+ui.fade.addEventListener('change', () => {
+    state.fadeTenths = Number(ui.fade.value);
+});
+
+ui.raw.addEventListener('submit', (event) => {
+    event.preventDefault();
+    send(ui.rawCommand.value.trim());
+    ui.rawCommand.value = '';
+});
+
+render();
+</script>
+</body>
+</html>
