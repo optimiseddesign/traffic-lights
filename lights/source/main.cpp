@@ -1,4 +1,5 @@
 #include "MicroBit.h"
+#include "ble_advdata.h"
 
 #if CONFIG_ENABLED(DEVICE_BLE)
 
@@ -190,7 +191,7 @@ static bool setLights(LightLevels target, int fadeMs = 0)
     return true;
 }
 
-// Show a random light combination for 60-600ms, never the same one twice running
+// Show a random light combination for 40-400ms, never the same one twice running
 static void runPartyStep()
 {
     static int partyIndex = 0;
@@ -198,7 +199,7 @@ static void runPartyStep()
     // Move 1 to (count - 1) places round the list, so it always lands on a different combination
     partyIndex = (partyIndex + 1 + uBit.random(PARTY_LIGHTS_COUNT - 1)) % PARTY_LIGHTS_COUNT;
     setLights(PARTY_LIGHTS[partyIndex]);
-    waitMs(60 + uBit.random(541));
+    waitMs(40 + uBit.random(361));
 }
 
 // Helper function to convert hex character to value
@@ -410,10 +411,36 @@ static void configureLightPWM()
     RED_PIN.setAnalogPeriodUs(1000);
 }
 
+static void configureBluetoothName()
+{
+    // CODAL fixes the name as "BBC micro:bit [xxxxx]", so replace it once Bluetooth has started.
+    // The name can't be longer than that (21 characters), so there's no room to keep "BBC micro:bit"
+    static const char NAME[] = "Traffic Lights";
+    ble_gap_conn_sec_mode_t noWrite;
+    BLE_GAP_CONN_SEC_MODE_SET_NO_ACCESS(&noWrite);
+    sd_ble_gap_device_name_set(&noWrite, (const uint8_t *)NAME, sizeof(NAME) - 1);
+
+    // Advertising already holds the old name, so give it new data with the same flags as CODAL.
+    // It must be a new buffer while advertising; handle 0 is the only advertising set
+    static uint8_t advBuffer[BLE_GAP_ADV_SET_DATA_SIZE_MAX];
+    ble_advdata_t advdata = {};
+    advdata.name_type = BLE_ADVDATA_FULL_NAME;
+    advdata.flags = BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE;
+
+    ble_gap_adv_data_t gapAdvData = {};
+    gapAdvData.adv_data.p_data = advBuffer;
+    gapAdvData.adv_data.len = sizeof(advBuffer);
+    ble_advdata_encode(&advdata, advBuffer, &gapAdvData.adv_data.len);
+
+    uint8_t advHandle = 0;
+    sd_ble_gap_adv_set_configure(&advHandle, &gapAdvData, NULL);
+}
+
 int main()
 {
     // Initialise the micro:bit runtime, and do startup actions
     uBit.init();
+    configureBluetoothName();
     configureOnboardSpeaker();
     configureLightPWM();
     onStart();

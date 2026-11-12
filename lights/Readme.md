@@ -34,7 +34,7 @@ This micro:bit traffic light firmware provides:
     | 4 | Amber | 3 s |
 
     The cycle is 40 s in total. The 2 s red+amber and 3 s amber times are fixed by UK regulations (TSRGD 2016). Red lasts 20 s to cover the other road's red+amber, green and amber.
-  - **Party** - Shows a random lamp combination for 60-600 ms, never the same combination twice running. Starts with the "giggle" sound and the sparkle pattern; leaving party mode shows the heart again
+  - **Party** - Shows a random lamp combination for 40-400 ms, never the same combination twice running. Starts with the "giggle" sound and the sparkle pattern; leaving party mode shows the heart again
   - **Bluetooth** - Holds whatever lamps the last `LED_` command set. Disconnecting Bluetooth hands control back to the traffic cycle
 
 - **Party Button** (button A, or an external button on P5):
@@ -109,6 +109,7 @@ This micro:bit traffic light firmware provides:
   - All lamps off at startup until the lamp test runs
 
 - **BLE Services**:
+  - Advertises as **Traffic Lights** instead of CODAL's fixed `BBC micro:bit [xxxxx]` name (`configureBluetoothName()` replaces it at startup; it can be at most 21 characters, so there isn't room to keep "BBC micro:bit" as well)
   - Nordic UART Service (NUS) for bidirectional text communication
   - Standard micro:bit button service
 
@@ -149,7 +150,7 @@ You can test the BLE UART functionality using the **Web Device CLI** tool, which
 2. **Watch the startup** - you should hear "hello", see the heart (❤️) pattern, and see all three lamps fade up and down 3 times before the traffic cycle starts
 3. **Press button A** (or the external button) - party mode should start with a giggle and the sparkle pattern; press again to return to traffic mode
 4. **Open the Web Device CLI** in a Web Bluetooth enabled browser (Chrome 56+, Edge 79+, etc.)
-5. **Click "Connect"** and select your micro:bit from the device list
+5. **Click "Connect"** and select **Traffic Lights** from the device list
 6. **Wait for connection** - you should see the tick (✓) pattern on your micro:bit, and the current state in the web interface, e.g. `STA_MOD_TRAFFIC` and `STA_LED_FF0000`. A new `STA_LED_` line follows each traffic cycle step
 7. **Send commands** through the web interface:
    - **LED Commands**: `LED_FF0000#` (red), `LED_00FF00#` (amber), `LED_0000FF#` (green), `LED_404040#` (all dim), `LED_000000#` (off)
