@@ -15,6 +15,7 @@
     --accent: #1c1c1e;
     --accent-text: #ffffff;
     --housing: #222224;
+    --housing-local: #6e6e73;
     --red: #ff3b30;
     --amber: #ff9f0a;
     --green: #30d158;
@@ -33,6 +34,7 @@
         --accent: #f2f2f7;
         --accent-text: #111113;
         --housing: #000000;
+        --housing-local: #48484a;
         --error: #ff6961;
     }
 }
@@ -134,8 +136,12 @@ h2 {
     gap: 14px;
     padding: 18px;
     border-radius: 28px;
-    background: var(--housing);
+    background: var(--housing-local);
+    transition: background 0.3s;
 }
+
+/* Black body under manual (Bluetooth) control, grey while the device runs itself */
+.light[data-mode="ble"] { background: var(--housing); }
 
 .lamp {
     width: 88px;
@@ -144,10 +150,14 @@ h2 {
     border: 0;
     border-radius: 50%;
     background: color-mix(in srgb, var(--colour) 18%, #111111);
-    transition: background 0.2s, box-shadow 0.2s;
+    transition: background var(--fade, 0.2s), box-shadow var(--fade, 0.2s);
+    /* Fading off: quadratic ease-out, like the firmware's squared brightness curve */
+    transition-timing-function: cubic-bezier(0.5, 1, 0.89, 1);
 }
 
 .lamp[aria-pressed="true"] {
+    /* Fading on: quadratic ease-in */
+    transition-timing-function: cubic-bezier(0.11, 0, 0.5, 0);
     background: var(--colour);
     box-shadow: 0 0 28px color-mix(in srgb, var(--colour) 70%, transparent);
 }
@@ -240,13 +250,13 @@ form input {
         <label class="fade">Fade <select id="fade"></select></label>
 
         <section>
-            <h2>Mode · <span id="mode"></span></h2>
+            <h2>Mode</h2>
             <div class="modes">
                 <button data-mode="traffic">Traffic</button>
                 <button data-mode="party">Party</button>
-                <button data-action="off">Off</button>
+                <button data-mode="ble">Manual</button>
             </div>
-            <p class="hint">Tap a lamp to take manual control. The party button on the device isn't reported here, so the mode shown can go out of date.</p>
+            <p class="hint">Tap a lamp to take manual control. Disconnecting returns the light to the traffic cycle.</p>
         </section>
 
         <section>
@@ -254,11 +264,11 @@ form input {
             <div id="sounds" class="sounds"></div>
         </section>
 
-        <details>
+        <details open>
             <summary>Log</summary>
             <ol id="log"></ol>
             <form id="raw" autocomplete="off">
-                <input id="rawCommand" placeholder="Raw command, e.g. LED_FF8000_20#" aria-label="Raw command" required>
+                <input id="rawCommand" placeholder="Raw command, e.g. LED_FF8000_20# or MOD_?#" aria-label="Raw command" required>
                 <button>Send</button>
             </form>
         </details>
@@ -281,12 +291,12 @@ const FADES = [
     { label: '2 s', tenths: 20 },
     { label: '5 s', tenths: 50 },
 ];
-const MODE_LABELS = { traffic: 'Traffic cycle', party: 'Party', manual: 'Manual' };
 const STATUS_LABELS = { unsupported: 'Web Bluetooth not supported in this browser', disconnected: 'Disconnected', connecting: 'Connecting…' };
 const LOG_PREFIX = { tx: '→', rx: '←', error: '!', info: '·' };
 const MAX_LOG_LINES = 100;
 
-// Page state. Lamp levels are 0-255 to match the firmware, ready for dimming later
+// Page state, kept in step with the device's STA_ messages. Mode names match the firmware
+// (ble = lamps held by LED_ commands). Lamp levels are 0-255, ready for dimming later
 const state = {
     connection: navigator.bluetooth ? 'disconnected' : 'unsupported',
     deviceName: '',
@@ -305,9 +315,9 @@ const ui = {
     status: document.getElementById('status'),
     connect: document.getElementById('connect'),
     controls: document.getElementById('controls'),
+    light: document.querySelector('.light'),
     lamps: document.querySelectorAll('[data-lamp]'),
     modes: document.querySelectorAll('[data-mode]'),
-    mode: document.getElementById('mode'),
     fade: document.getElementById('fade'),
     sounds: document.getElementById('sounds'),
     log: document.getElementById('log'),
@@ -350,6 +360,11 @@ async function connect() {
         state.connection = 'connected';
         state.deviceName = device.name || 'micro:bit';
         log('info', `Connected to ${state.deviceName}`);
+
+        // The device sends its state 1 s after connecting, which can be before we were
+        // listening, so ask for it too
+        send('MOD_?#');
+        send('LED_?#');
     } catch (error) {
         log('error', error.message);
         if (device?.gatt.connected) {
@@ -383,9 +398,31 @@ function onNotify(event) {
     rxBuffer += new TextDecoder().decode(event.target.value);
     const lines = rxBuffer.split(/\r?\n/);
     rxBuffer = lines.pop();
-    for (const line of lines.filter(Boolean)) {
-        log(line.startsWith('ERROR') ? 'error' : 'rx', line);
+    lines.filter(Boolean).forEach(onLine);
+}
+
+// Each line is a reply (OK, OK <status> or ERR <reason>) or a status message (STA_<status>)
+function onLine(line) {
+    log(line.startsWith('ERR') ? 'error' : 'rx', line);
+
+    const status = line.match(/^(?:STA_|OK )(.+)$/)?.[1];
+    if (status) applyStatus(status);
+}
+
+// Apply a status from the device: MOD_<TRAFFIC|PARTY|BLE> or LED_<RRAAGG>
+function applyStatus(status) {
+    const mode = status.match(/^MOD_(TRAFFIC|PARTY|BLE)$/)?.[1];
+    const lamps = status.match(/^LED_([0-9A-F]{6})$/)?.[1];
+
+    if (mode) {
+        state.mode = mode.toLowerCase();
+        // Party flashes aren't reported, so show the lamps off rather than out of date
+        if (state.mode === 'party') state.levels = { ...OFF };
+    } else if (lamps && state.mode !== 'party') {
+        const [red, amber, green] = lamps.match(/../g).map((hex) => parseInt(hex, 16));
+        state.levels = { red, amber, green };
     }
+    render();
 }
 
 // Writes are queued so a new command never overlaps one still in progress
@@ -402,23 +439,24 @@ function send(command) {
 
 // ---- Actions ----
 
+// Actions update the page straight away; the device's STA_ messages then confirm or correct it
+
+// Starts from the lamps showing now, so tapping a lamp mid-cycle keeps the others as they are
 function toggleLamp(lamp) {
-    state.mode = 'manual';
+    state.mode = 'ble';
     state.levels[lamp] = state.levels[lamp] > 0 ? 0 : 255;
     send(ledCommand(state.levels, state.fadeTenths));
 }
 
-// The page can't see which lamps the traffic cycle or party is showing, so it shows them off
+// Manual has no MOD_ command: any LED_ command switches the device to it, so start with all lamps off
 function setMode(mode) {
     state.mode = mode;
-    state.levels = { ...OFF };
-    send(modeCommand(mode));
-}
-
-function allOff() {
-    state.mode = 'manual';
-    state.levels = { ...OFF };
-    send(ledCommand(state.levels, state.fadeTenths));
+    if (mode === 'ble') {
+        state.levels = { ...OFF };
+        send(ledCommand(state.levels, state.fadeTenths));
+    } else {
+        send(modeCommand(mode));
+    }
 }
 
 // ---- View ----
@@ -432,21 +470,29 @@ function render() {
     ui.connect.disabled = state.connection === 'unsupported' || state.connection === 'connecting';
     ui.controls.disabled = !connected;
 
+    // Page lamps change over the same fade as the real ones when set from here
+    const fadeSeconds = state.mode === 'ble' && state.fadeTenths > 0 ? state.fadeTenths / 10 : 0.2;
+    ui.light.style.setProperty('--fade', `${fadeSeconds}s`);
+    ui.light.dataset.mode = state.mode;
+
     for (const lamp of ui.lamps) {
         lamp.setAttribute('aria-pressed', state.levels[lamp.dataset.lamp] > 0);
     }
     for (const button of ui.modes) {
         button.setAttribute('aria-pressed', button.dataset.mode === state.mode);
     }
-    ui.mode.textContent = MODE_LABELS[state.mode];
 }
 
 function log(kind, text) {
     const line = document.createElement('li');
     line.className = kind;
     line.textContent = `${new Date().toLocaleTimeString()} ${LOG_PREFIX[kind]} ${text}`;
-    ui.log.prepend(line);
-    ui.log.children[MAX_LOG_LINES]?.remove();
+
+    // Newest at the bottom; keep it in view unless the log has been scrolled up to read
+    const atBottom = ui.log.scrollHeight - ui.log.scrollTop - ui.log.clientHeight < 8;
+    ui.log.append(line);
+    if (ui.log.children.length > MAX_LOG_LINES) ui.log.firstElementChild.remove();
+    if (atBottom) ui.log.scrollTop = ui.log.scrollHeight;
 }
 
 // ---- Setup ----
@@ -470,7 +516,6 @@ document.addEventListener('click', (event) => {
     if (lamp) toggleLamp(lamp);
     else if (mode) setMode(mode);
     else if (sound) send(soundCommand(sound));
-    else if (action === 'off') allOff();
     else if (action === 'connect') state.connection === 'connected' ? disconnect() : connect();
     render();
 });
