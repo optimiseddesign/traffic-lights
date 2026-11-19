@@ -9,7 +9,7 @@ It was adapted from an earlier [Keyes MiniCar robot project](https://github.com/
 This micro:bit traffic light firmware provides:
 
 - **UK Traffic Light Cycle** - Drives a 3-lamp (red, amber, green) traffic light through the standard UK sequence
-- **Party Mode** - Random lamp combinations at random speeds, toggled by a push button or Bluetooth
+- **Party Mode** - Random lamp combinations at random speeds, or an "8-ball" roll that lands on one lamp, toggled by a push button or Bluetooth
 - **Bluetooth Low Energy (BLE) UART Service** - Uses Nordic UART Service (NUS) for wireless communication
 - **Lamp Brightness and Fades** - Set each lamp's brightness (PWM) with hex codes, instantly or with a timed fade
 - **Visual Feedback** - Custom LED display patterns for startup, connection status and party mode
@@ -34,11 +34,14 @@ This micro:bit traffic light firmware provides:
     | 4 | Amber | 3 s |
 
     The cycle is 40 s in total. The 2 s red+amber and 3 s amber times are fixed by UK regulations (TSRGD 2016). Red lasts 20 s to cover the other road's red+amber, green and amber.
-  - **Party** - Shows a random lamp combination for 40-400 ms, never the same combination twice running. Starts with the "giggle" sound and the sparkle pattern; leaving party mode shows the heart again
+  - **Party** - Starts with the "giggle" sound and the sparkle pattern; leaving party mode shows the heart again. Two party types, chosen over Bluetooth:
+    - **Random** (`PARTY_RANDOM`, the default) - Shows a random lamp combination for 40-400 ms, never the same combination twice running
+    - **8-ball** (`PARTY_8BALL`) - Spins round red, amber, green, red… starting at 40 ms per lamp and slowing by 10% each step for about 10 s (to about 1 s per lamp). The lamp it lands on flashes 3 times and holds for 3 s, then it rolls again
   - **Bluetooth** - Holds whatever lamps the last `LED_` command set. Disconnecting Bluetooth hands control back to the traffic cycle
 
 - **Party Button** (button A, or an external button on P5):
   - Each press toggles between party and traffic mode
+  - Starts whichever party type was last chosen over Bluetooth (random until then)
   - From Bluetooth control, a press takes back local control and starts party mode
   - Acts on press, not click, so a press still works if the button is held for more than 1 second
 
@@ -70,8 +73,9 @@ This micro:bit traffic light firmware provides:
 
 - **Mode Commands** (format: `MOD_<MODE>#`):
   - `MOD_TRAFFIC#` - Switch to traffic mode (restarts the cycle from red)
-  - `MOD_PARTY#` - Switch to party mode
-  - `MOD_?#` - Query the mode: reply `OK MOD_TRAFFIC`, `OK MOD_PARTY`, or `OK MOD_BLE` while holding lamps from an `LED_` command
+  - `MOD_PARTY_RANDOM#` - Switch to random party mode (and make it the party button's party)
+  - `MOD_PARTY_8BALL#` - Switch to 8-ball party mode (and make it the party button's party); sending it again starts a new roll
+  - `MOD_?#` - Query the mode: reply `OK MOD_TRAFFIC`, `OK MOD_PARTY_RANDOM`, `OK MOD_PARTY_8BALL`, or `OK MOD_BLE` while holding lamps from an `LED_` command
 
 - **Audio Commands** (format: `SPK_<SOUND>#`):
   - `SPK_GIGGLE#` - Play "giggle" sound expression
@@ -88,18 +92,18 @@ This micro:bit traffic light firmware provides:
 - **Command Processing**:
   - Commands use structured format with 3-character type identifier and underscore separator (`LED_`, `MOD_`, `SPK_`)
   - All commands must end with `#` delimiter
-  - Every command gets exactly one reply line (ending `\r\n`), and every message fits in one 20-byte Bluetooth packet:
-    - `OK` on success, or `OK <answer>` for a query (`OK LED_FF8000`, `OK MOD_PARTY`)
+  - Every command gets exactly one reply line (ending `\r\n`). Every message fits in one 20-byte Bluetooth packet, except `STA_MOD_PARTY_RANDOM` and `STA_MOD_PARTY_8BALL` which take two, so join packets until a full line arrives:
+    - `OK` on success, or `OK <answer>` for a query (`OK LED_FF8000`, `OK MOD_PARTY_RANDOM`)
     - `ERR <reason>` on failure: `ERR bad LED_`, `ERR bad MOD_`, `ERR bad SPK_` or `ERR unknown cmd`
   - Commands are handled one at a time in the order received, so a client can match replies to its commands in order
   - Invalid `LED_` or `MOD_` commands, and unknown command types, also play the "sad" sound
   - Invalid `SPK_` commands play no sound, since "sad" is itself a valid sound command
 
 - **Status Messages** (`STA_`, sent without being asked):
-  - `STA_MOD_<MODE>` (`TRAFFIC`, `PARTY` or `BLE`) and `STA_LED_<RRAAGG>`, using the same form as the query answers
+  - `STA_MOD_<MODE>` (`TRAFFIC`, `PARTY_RANDOM`, `PARTY_8BALL` or `BLE`) and `STA_LED_<RRAAGG>`, using the same form as the query answers
   - Both are sent 1 s after a client connects
-  - `STA_MOD_` is sent whenever the mode changes, by command, party button or disconnect
-  - `STA_LED_` is sent whenever new lamp levels are set: each traffic cycle step, and each `LED_` command (once, with the levels being faded to). Not for each party mode flash (too frequent)
+  - `STA_MOD_` is sent whenever the mode or party type changes, by command, party button or disconnect
+  - `STA_LED_` is sent whenever new lamp levels are set: each traffic cycle step, and each `LED_` command (once, with the levels being faded to). Not in party mode (too frequent); `LED_?#` still gives the lamps showing
   - They can arrive before a command's reply, so read `STA_` lines separately from `OK`/`ERR`
 
 - **Hardware Integration**:
@@ -155,7 +159,7 @@ You can test the BLE UART functionality using the **Web Device CLI** tool, which
 7. **Send commands** through the web interface:
    - **LED Commands**: `LED_FF0000#` (red), `LED_00FF00#` (amber), `LED_0000FF#` (green), `LED_404040#` (all dim), `LED_000000#` (off)
    - **Fade Commands**: `LED_FFFFFF_20#` (fade all on over 2 s), `LED_000000_50#` (fade all off over 5 s)
-   - **Mode Commands**: `MOD_TRAFFIC#`, `MOD_PARTY#`
+   - **Mode Commands**: `MOD_TRAFFIC#`, `MOD_PARTY_RANDOM#`, `MOD_PARTY_8BALL#`
    - **Query Commands**: `LED_?#`, `MOD_?#`
    - **Audio Commands**: `SPK_HAPPY#`, `SPK_GIGGLE#`, etc.
    - Watch for lamp changes, mode changes and audio feedback on the micro:bit
@@ -170,7 +174,8 @@ LED_FF8000#     # Red full, amber about half
 LED_00FF00_20#  # Fade to amber only over 2 seconds
 LED_404040#     # All lamps dim
 LED_000000#     # All lamps off
-MOD_PARTY#      # Start party mode
+MOD_PARTY_RANDOM#  # Start random party mode
+MOD_PARTY_8BALL#   # Start 8-ball party mode
 MOD_TRAFFIC#    # Back to the UK traffic cycle, from red
 LED_?#          # Query the lamps, e.g. OK LED_FF0000
 MOD_?#          # Query the mode, e.g. OK MOD_TRAFFIC
@@ -280,12 +285,13 @@ If VS Code tasks are not visible:
 
 Almost all of the logic is in `source/main.cpp`:
 
-- **Definitions** - Lamp pins, `LightLevels` (red, amber and green brightness, 0-255 each), the `LIGHT_*` constants, `SequenceStep` (lamps plus how long to hold them), `UK_TRAFFIC_SEQUENCE` and `PARTY_LIGHTS`
-- **State** - `mode`, `bleLights`, `bleFadeMs`, `currentLights` and `modeChangeCount`, plus `modeStatus` and `lightsStatus`: the mode and lamps as text (e.g. `MOD_TRAFFIC`, `LED_FF0000`) for `STA_` messages and queries
+- **Definitions** - Lamp pins, `LightLevels` (red, amber and green brightness, 0-255 each), the `LIGHT_*` constants, `SequenceStep` (lamps plus how long to hold them), `UK_TRAFFIC_SEQUENCE`, `PARTY_RANDOM_LIGHTS` and `PARTY_8BALL_LIGHTS`
+- **State** - `mode`, `partyType` (`PARTY_RANDOM` or `PARTY_8BALL`, the party `MODE_PARTY` runs), `bleLights`, `bleFadeMs`, `currentLights` and `modeChangeCount`, plus `modeStatus` and `lightsStatus`: the mode and lamps as text (e.g. `MOD_TRAFFIC`, `LED_FF0000`) for `STA_` messages and queries
 - **Mode and Timing**:
-  - `setMode()` changes the mode, increments `modeChangeCount`, updates `modeStatus` and sends `STA_MOD_` if the mode changed; `onModeChanged()` plays the mode sounds and shows the icons
+  - `setMode()` changes the mode, increments `modeChangeCount`, updates `modeStatus` and sends `STA_MOD_` if it changed; `onModeChanged()` plays the mode sounds and shows the icons
   - `waitMs()` sleeps in 20 ms slices and returns `false` early if the mode changed during the wait
   - Only the main loop drives the lamps; button and command handlers just change the mode
+  - In party mode the main loop calls `runPartyRandomStep()` (one random flash) or `runParty8BallRoll()` (one whole roll), depending on `partyType`
 - **Lamps**:
   - `levelToDuty()` converts a 0-255 level to a 0-1023 PWM duty using the brightness curve
   - `writeLights()` is the only code that writes to the pins
@@ -357,7 +363,7 @@ cp codal.dev.json codal.json
 ### Command Not Working
 - Ensure commands follow the correct format:
   - LED commands: `LED_<RRAAGG>#` or `LED_<RRAAGG>_<TT>#` (e.g., `LED_FF0000#`, `LED_00FF00_20#`)
-  - Mode commands: `MOD_TRAFFIC#` or `MOD_PARTY#` (upper case)
+  - Mode commands: `MOD_TRAFFIC#`, `MOD_PARTY_RANDOM#` or `MOD_PARTY_8BALL#` (upper case; plain `MOD_PARTY#` is no longer accepted)
   - Audio commands: `SPK_<SOUND>#` (e.g., `SPK_HAPPY#`, upper case)
 - Check that the micro:bit shows tick (✓) pattern when connected
 - Check each command gets an `OK` or `ERR` reply; no reply at all usually means the `#` was missing

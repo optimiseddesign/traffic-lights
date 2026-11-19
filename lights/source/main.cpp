@@ -46,16 +46,24 @@ static const SequenceStep UK_TRAFFIC_SEQUENCE[] = {
 };
 
 // Every combination with at least one light on, picked at random in party mode
-static const LightLevels PARTY_LIGHTS[] = {
+static const LightLevels PARTY_RANDOM_LIGHTS[] = {
     LIGHT_RED, LIGHT_AMBER, LIGHT_GREEN, LIGHT_RED_AMBER,
     LIGHT_RED_GREEN, LIGHT_AMBER_GREEN, LIGHT_ALL,
 };
-static const int PARTY_LIGHTS_COUNT = sizeof(PARTY_LIGHTS) / sizeof(PARTY_LIGHTS[0]);
+static const int PARTY_RANDOM_LIGHTS_COUNT = sizeof(PARTY_RANDOM_LIGHTS) / sizeof(PARTY_RANDOM_LIGHTS[0]);
+
+// Lights the 8-ball party spins round, in order (wrapping from green back to red)
+static const LightLevels PARTY_8BALL_LIGHTS[] = {LIGHT_RED, LIGHT_AMBER, LIGHT_GREEN};
 
 // Operating modes: local UK traffic cycle or party, or lights held by Bluetooth LED_ commands
 // Only the main loop drives the lights - handlers just set the mode and what to show
 enum Mode { MODE_TRAFFIC, MODE_PARTY, MODE_BLE };
 static Mode mode = MODE_TRAFFIC;
+
+// Party types: random flashes, or an 8-ball roll. MODE_PARTY (and the party button) runs
+// the last one chosen over Bluetooth, random until then
+enum PartyType { PARTY_RANDOM, PARTY_8BALL };
+static PartyType partyType = PARTY_RANDOM;
 static LightLevels bleLights = LIGHT_OFF;       // lights held while in MODE_BLE
 static int bleFadeMs = 0;                       // fade time to bleLights (0 = instant)
 static LightLevels currentLights = LIGHT_OFF;   // lights showing now, so fades know where to start
@@ -116,19 +124,19 @@ static void onModeChanged(Mode oldMode, Mode newMode)
 
 static void setMode(Mode newMode)
 {
-    Mode oldMode = mode;
-    onModeChanged(oldMode, newMode);
+    onModeChanged(mode, newMode);
     mode = newMode;
     modeChangeCount++;
 
-    // Remember the mode as text, and tell the client if it changed
+    // Remember the mode (and party type) as text, and tell the client if it changed
+    const char *oldStatus = modeStatus;
     switch (mode) {
         case MODE_TRAFFIC: modeStatus = "MOD_TRAFFIC"; break;
-        case MODE_PARTY:   modeStatus = "MOD_PARTY";   break;
+        case MODE_PARTY:   modeStatus = (partyType == PARTY_8BALL) ? "MOD_PARTY_8BALL" : "MOD_PARTY_RANDOM"; break;
         case MODE_BLE:     modeStatus = "MOD_BLE";     break;
         default:           modeStatus = "MOD_UNKNOWN"; break;
     }
-    if (mode != oldMode) uart->send(ManagedString("STA_") + modeStatus + "\r\n");
+    if (modeStatus != oldStatus) uart->send(ManagedString("STA_") + modeStatus + "\r\n");
 }
 
 // Sleep for durationMs in short slices, returning false early if the mode changes
@@ -192,14 +200,38 @@ static bool setLights(LightLevels target, int fadeMs = 0)
 }
 
 // Show a random light combination for 40-400ms, never the same one twice running
-static void runPartyStep()
+static void runPartyRandomStep()
 {
     static int partyIndex = 0;
 
     // Move 1 to (count - 1) places round the list, so it always lands on a different combination
-    partyIndex = (partyIndex + 1 + uBit.random(PARTY_LIGHTS_COUNT - 1)) % PARTY_LIGHTS_COUNT;
-    setLights(PARTY_LIGHTS[partyIndex]);
+    partyIndex = (partyIndex + 1 + uBit.random(PARTY_RANDOM_LIGHTS_COUNT - 1)) % PARTY_RANDOM_LIGHTS_COUNT;
+    setLights(PARTY_RANDOM_LIGHTS[partyIndex]);
     waitMs(40 + uBit.random(361));
+}
+
+// One 8-ball roll: spin round red, amber, green, slowing over 10s until it lands on one,
+// then flash it 3 times and hold it for 3s. Returns early if the mode changes
+static void runParty8BallRoll()
+{
+    // Start on a random light, so where it lands is random
+    int index = uBit.random(3);
+
+    // Each step is 10% longer than the last: about 35 steps, from 40ms up to about 1s
+    for (int elapsedMs = 0, stepMs = 40; elapsedMs < 10000; elapsedMs += stepMs, stepMs += stepMs / 10) {
+        index = (index + 1) % 3;
+        setLights(PARTY_8BALL_LIGHTS[index]);
+        if (!waitMs(stepMs)) return;
+    }
+
+    // Flash the light it landed on 3 times, then hold it
+    for (int i = 0; i < 3; i++) {
+        setLights(LIGHT_OFF);
+        if (!waitMs(150)) return;
+        setLights(PARTY_8BALL_LIGHTS[index]);
+        if (!waitMs(150)) return;
+    }
+    waitMs(3000);
 }
 
 // Helper function to convert hex character to value
@@ -278,14 +310,20 @@ static void handleLEDCommand(ManagedString ledCmd) {
 }
 
 // Function to handle mode commands starting with MOD_
-// MOD_?# queries the mode, e.g. reply "OK MOD_TRAFFIC" (MOD_BLE while holding LED_ lights)
+// MOD_?# queries the mode, e.g. reply "OK MOD_TRAFFIC" (MOD_BLE while holding LED_ lights,
+// MOD_PARTY_RANDOM or MOD_PARTY_8BALL in party mode)
 static void handleModeCommand(ManagedString modeCmd) {
     if (modeCmd == "?") {
         uart->send(ManagedString("OK ") + modeStatus + "\r\n");
     } else if (modeCmd == "TRAFFIC") {
         setMode(MODE_TRAFFIC);
         uart->send(ManagedString("OK\r\n"));
-    } else if (modeCmd == "PARTY") {
+    } else if (modeCmd == "PARTY_RANDOM") {
+        partyType = PARTY_RANDOM;
+        setMode(MODE_PARTY);
+        uart->send(ManagedString("OK\r\n"));
+    } else if (modeCmd == "PARTY_8BALL") {
+        partyType = PARTY_8BALL;
         setMode(MODE_PARTY);
         uart->send(ManagedString("OK\r\n"));
     } else {
@@ -350,7 +388,8 @@ static void onDisconnected(MicroBitEvent)
 
 static void onPartyButton(MicroBitEvent)
 {
-    // Toggle party on/off; from Bluetooth control this takes back local control into party
+    // Toggle party on/off (the party last chosen over Bluetooth, random until then);
+    // from Bluetooth control this takes back local control into party
     setMode(mode == MODE_PARTY ? MODE_TRAFFIC : MODE_PARTY);
 }
 
@@ -472,7 +511,8 @@ int main()
                 break;
 
             case MODE_PARTY:
-                runPartyStep();
+                if (partyType == PARTY_8BALL) runParty8BallRoll();
+                else runPartyRandomStep();
                 break;
 
             case MODE_BLE:

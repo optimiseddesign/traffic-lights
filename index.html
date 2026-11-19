@@ -184,7 +184,7 @@ select {
 /* Mode and sound buttons */
 .modes {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 8px;
 }
 
@@ -253,7 +253,8 @@ form input {
             <h2>Mode</h2>
             <div class="modes">
                 <button data-mode="traffic">Traffic</button>
-                <button data-mode="party">Party</button>
+                <button data-mode="party_random">Random</button>
+                <button data-mode="party_8ball">8-ball</button>
                 <button data-mode="ble">Manual</button>
             </div>
             <p class="hint">Tap a lamp to take manual control. Disconnecting returns the light to the traffic cycle.</p>
@@ -409,16 +410,16 @@ function onLine(line) {
     if (status) applyStatus(status);
 }
 
-// Apply a status from the device: MOD_<TRAFFIC|PARTY|BLE> or LED_<RRAAGG>
+// Apply a status from the device: MOD_<TRAFFIC|PARTY_RANDOM|PARTY_8BALL|BLE> or LED_<RRAAGG>
 function applyStatus(status) {
-    const mode = status.match(/^MOD_(TRAFFIC|PARTY|BLE)$/)?.[1];
+    const mode = status.match(/^MOD_(TRAFFIC|PARTY_RANDOM|PARTY_8BALL|BLE)$/)?.[1];
     const lamps = status.match(/^LED_([0-9A-F]{6})$/)?.[1];
 
     if (mode) {
         state.mode = mode.toLowerCase();
-        // Party flashes aren't reported, so show the lamps off rather than out of date
-        if (state.mode === 'party') state.levels = { ...OFF };
-    } else if (lamps && state.mode !== 'party') {
+        // Party lights aren't reported, so show the lamps off rather than out of date
+        if (state.mode.startsWith('party')) state.levels = { ...OFF };
+    } else if (lamps && !state.mode.startsWith('party')) {
         const [red, amber, green] = lamps.match(/../g).map((hex) => parseInt(hex, 16));
         state.levels = { red, amber, green };
     }
