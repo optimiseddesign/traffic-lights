@@ -210,15 +210,17 @@ static void runPartyRandomStep()
     waitMs(40 + uBit.random(361));
 }
 
-// One 8-ball roll: spin round red, amber, green, slowing over 10s until it lands on one,
-// then flash it 3 times and hold it for 3s. Returns early if the mode changes
+// One 8-ball roll: spin round red, amber, green, slowing over 12s until it lands on one,
+// then flash it 3 times and hold it for 3s. Then all off for 3s, fade red up and go back
+// to traffic. Returns early if the mode changes
 static void runParty8BallRoll()
 {
     // Start on a random light, so where it lands is random
     int index = uBit.random(3);
 
-    // Each step is 10% longer than the last: about 35 steps, from 40ms up to about 1s
-    for (int elapsedMs = 0, stepMs = 40; elapsedMs < 10000; elapsedMs += stepMs, stepMs += stepMs / 10) {
+    // stepMs grows by a fifth of itself each step (20% longer than the last), so it slows
+    // more and more: about 23 steps, from 40ms up to about 2.1s
+    for (int elapsedMs = 0, stepMs = 40; elapsedMs < 12000; elapsedMs += stepMs, stepMs += stepMs / 5) {
         index = (index + 1) % 3;
         setLights(PARTY_8BALL_LIGHTS[index]);
         if (!waitMs(stepMs)) return;
@@ -231,7 +233,15 @@ static void runParty8BallRoll()
         setLights(PARTY_8BALL_LIGHTS[index]);
         if (!waitMs(150)) return;
     }
-    waitMs(3000);
+    if (!waitMs(3000)) return;
+
+    // All off for 3s, then fade red up slowly, ready for the traffic cycle to start from red
+    setLights(LIGHT_OFF);
+    if (!waitMs(3000)) return;
+    if (!setLights(LIGHT_RED, 2000)) return;
+
+    // Only roll once: back to traffic until the button or a command starts it again
+    setMode(MODE_TRAFFIC);
 }
 
 // Helper function to convert hex character to value

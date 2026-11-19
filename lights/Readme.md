@@ -36,7 +36,7 @@ This micro:bit traffic light firmware provides:
     The cycle is 40 s in total. The 2 s red+amber and 3 s amber times are fixed by UK regulations (TSRGD 2016). Red lasts 20 s to cover the other road's red+amber, green and amber.
   - **Party** - Starts with the "giggle" sound and the sparkle pattern; leaving party mode shows the heart again. Two party types, chosen over Bluetooth:
     - **Random** (`PARTY_RANDOM`, the default) - Shows a random lamp combination for 40-400 ms, never the same combination twice running
-    - **8-ball** (`PARTY_8BALL`) - Spins round red, amber, green, red… starting at 40 ms per lamp and slowing by 10% each step for about 10 s (to about 1 s per lamp). The lamp it lands on flashes 3 times and holds for 3 s, then it rolls again
+    - **8-ball** (`PARTY_8BALL`) - Spins round red, amber, green, red… starting at 40 ms per lamp, with each step 20% longer than the last, so it slows more and more over about 12 s (to about 2.1 s per lamp). The lamp it lands on flashes 3 times and holds for 3 s. Then all lamps are off for 3 s, red fades up over 2 s, and the traffic cycle restarts. It rolls once each time it is started
   - **Bluetooth** - Holds whatever lamps the last `LED_` command set. Disconnecting Bluetooth hands control back to the traffic cycle
 
 - **Party Button** (button A, or an external button on P5):
@@ -74,7 +74,7 @@ This micro:bit traffic light firmware provides:
 - **Mode Commands** (format: `MOD_<MODE>#`):
   - `MOD_TRAFFIC#` - Switch to traffic mode (restarts the cycle from red)
   - `MOD_PARTY_RANDOM#` - Switch to random party mode (and make it the party button's party)
-  - `MOD_PARTY_8BALL#` - Switch to 8-ball party mode (and make it the party button's party); sending it again starts a new roll
+  - `MOD_PARTY_8BALL#` - Switch to 8-ball party mode (and make it the party button's party); rolls once, then goes back to traffic; sending it mid-roll starts a new roll
   - `MOD_?#` - Query the mode: reply `OK MOD_TRAFFIC`, `OK MOD_PARTY_RANDOM`, `OK MOD_PARTY_8BALL`, or `OK MOD_BLE` while holding lamps from an `LED_` command
 
 - **Audio Commands** (format: `SPK_<SOUND>#`):
@@ -102,7 +102,7 @@ This micro:bit traffic light firmware provides:
 - **Status Messages** (`STA_`, sent without being asked):
   - `STA_MOD_<MODE>` (`TRAFFIC`, `PARTY_RANDOM`, `PARTY_8BALL` or `BLE`) and `STA_LED_<RRAAGG>`, using the same form as the query answers
   - Both are sent 1 s after a client connects
-  - `STA_MOD_` is sent whenever the mode or party type changes, by command, party button or disconnect
+  - `STA_MOD_` is sent whenever the mode or party type changes, by command, party button, disconnect or the end of an 8-ball roll
   - `STA_LED_` is sent whenever new lamp levels are set: each traffic cycle step, and each `LED_` command (once, with the levels being faded to). Not in party mode (too frequent); `LED_?#` still gives the lamps showing
   - They can arrive before a command's reply, so read `STA_` lines separately from `OK`/`ERR`
 
@@ -291,7 +291,7 @@ Almost all of the logic is in `source/main.cpp`:
   - `setMode()` changes the mode, increments `modeChangeCount`, updates `modeStatus` and sends `STA_MOD_` if it changed; `onModeChanged()` plays the mode sounds and shows the icons
   - `waitMs()` sleeps in 20 ms slices and returns `false` early if the mode changed during the wait
   - Only the main loop drives the lamps; button and command handlers just change the mode
-  - In party mode the main loop calls `runPartyRandomStep()` (one random flash) or `runParty8BallRoll()` (one whole roll), depending on `partyType`
+  - In party mode the main loop calls `runPartyRandomStep()` (one random flash) or `runParty8BallRoll()` (one whole roll, which then switches back to traffic), depending on `partyType`
 - **Lamps**:
   - `levelToDuty()` converts a 0-255 level to a 0-1023 PWM duty using the brightness curve
   - `writeLights()` is the only code that writes to the pins
